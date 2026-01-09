@@ -40,8 +40,9 @@ jobs:
             --name localstack \
             -p 4566:4566 \
             -e SERVICES=ec2,s3,vpc,iam,sts,elbv2 \
-            -e DEBUG=1 \
-            -e DOCKER_HOST=unix:///var/run/docker.sock \
+            -e DEBUG=0 \
+            -e LAMBDA_EXECUTOR=local \
+            -e PERSISTENCE=0 \
             localstack/localstack:latest
       
       - name: Wait for LocalStack to be ready

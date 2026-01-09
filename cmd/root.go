@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fatih/color"
 	"github.com/infratest/infratest/internal/flow"
 	"github.com/infratest/infratest/internal/flow/interpolator"
 	"github.com/infratest/infratest/internal/reporting"
@@ -97,6 +98,23 @@ func executeFlow(flowPath string) error {
 		setupLocalStackEnv(endpoint)
 		ui.PrintInfo(fmt.Sprintf("🔧 LocalStack mode enabled (endpoint: %s)", endpoint))
 	}
+	
+	// Show debug information at startup
+	if debug {
+		fmt.Println()
+		color.New(color.FgMagenta, color.Bold).Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+		color.New(color.FgMagenta, color.Bold).Printf("  [DEBUG MODE ENABLED]\n")
+		color.New(color.FgMagenta, color.Bold).Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+		color.New(color.FgCyan).Printf("Flow File: %s\n", flowPath)
+		color.New(color.FgCyan).Printf("Working Directory: %s\n", f.WorkingDir)
+		color.New(color.FgCyan).Printf("Total Steps: %d\n", len(f.Steps))
+		if localstack {
+			color.New(color.FgCyan).Printf("LocalStack: enabled\n")
+		}
+		color.New(color.FgCyan).Printf("Cleanup Timeout: %v\n", cleanupTimeout)
+		color.New(color.FgMagenta, color.Bold).Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+		fmt.Println()
+	}
 
 	// Create executor
 	executor, err := flow.NewExecutor(f, debug)
@@ -183,44 +201,76 @@ func isTerminal(f *os.File) bool {
 	return (stat.Mode() & os.ModeCharDevice) != 0
 }
 
-// showErrorDetails shows detailed error information
+// showErrorDetails shows detailed error information with timeline
 func showErrorDetails(executor *flow.Executor, err error) {
 	results := executor.GetResults()
+	f := executor.GetFlow()
 	
 	fmt.Println()
-	ui.PrintFailure("Error Details:")
+	color.New(color.FgRed, color.Bold).Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	color.New(color.FgRed, color.Bold).Printf("  ❌ FLOW EXECUTION FAILED\n")
+	color.New(color.FgRed, color.Bold).Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 	fmt.Println()
 	
-	// Show successful steps
-	successCount := 0
-	for _, r := range results {
-		if r.Success {
-			successCount++
-		}
-	}
+	// Show timeline of steps
+	color.New(color.FgCyan, color.Bold).Printf("Execution Timeline:\n")
+	fmt.Println()
 	
-	if successCount > 0 {
-		ui.PrintInfo(fmt.Sprintf("✓ Completed steps: %d", successCount))
-		for _, r := range results {
-			if r.Success {
-				fmt.Printf("  • %s (%s)\n", r.StepName, r.Duration.Round(time.Second))
+	for i, step := range f.Steps {
+		stepNum := i + 1
+		// Find result for this step
+		var result *flow.StepResult
+		for j := range results {
+			if results[j].StepName == step.Name {
+				result = &results[j]
+				break
 			}
 		}
-		fmt.Println()
+		
+		if result != nil && result.Success {
+			// Show successful step with green checkmark
+			color.New(color.FgGreen).Printf("  ✓ Step %d/%d: %s", stepNum, len(f.Steps), step.Name)
+			color.New(color.FgHiBlack).Printf(" [%s]\n", result.Duration.Round(time.Second))
+		} else if result != nil && !result.Success {
+			// Show failed step with red X
+			color.New(color.FgRed, color.Bold).Printf("  ✗ Step %d/%d: %s", stepNum, len(f.Steps), step.Name)
+			if result != nil {
+				color.New(color.FgHiBlack).Printf(" [%s]\n", result.Duration.Round(time.Second))
+			} else {
+				fmt.Println()
+			}
+		} else {
+			// Step not executed yet
+			color.New(color.FgHiBlack).Printf("  ⊘ Step %d/%d: %s", stepNum, len(f.Steps), step.Name)
+			color.New(color.FgHiBlack).Printf(" [not executed]\n")
+		}
 	}
+	
+	fmt.Println()
 	
 	// Show failing step details
 	for _, r := range results {
 		if !r.Success {
-			ui.PrintFailure(fmt.Sprintf("✗ Failed step: %s", r.StepName))
+			color.New(color.FgRed, color.Bold).Printf("Failed Step: %s\n", r.StepName)
+			color.New(color.FgYellow).Printf("Type: %s\n", r.StepType)
+			
 			if r.Error != nil {
-				fmt.Printf("  Error: %v\n", r.Error)
+				fmt.Println()
+				color.New(color.FgRed).Printf("Error: %v\n", r.Error)
 			}
-			if r.Output != "" && debug {
-				fmt.Printf("  Output:\n%s\n", indentOutput(r.Output))
+			
+			// Output is already shown by terraform executor with full formatting
+			// Only show here if it's not a terraform step (e.g., HTTP, inventory)
+			if r.StepType != "terraform" && r.Output != "" {
+				fmt.Println()
+				color.New(color.FgYellow).Printf("Output:\n")
+				fmt.Print(indentOutput(r.Output))
+				fmt.Println()
 			}
 		}
 	}
+	
+	fmt.Println()
 }
 
 func indentOutput(output string) string {

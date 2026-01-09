@@ -1,0 +1,62 @@
+name: alb-ec2
+description: Deploy VPC with EC2 instances behind an Application Load Balancer
+
+working_dir: ./terraform
+
+environment:
+  provider: aws
+
+steps:
+  - name: init-and-plan
+    type: terraform
+    commands:
+      - terraform init
+      - terraform plan -out=plan.tfplan
+
+  - name: apply
+    type: terraform
+    command: terraform apply -auto-approve plan.tfplan
+
+  - name: inventory-check
+    type: terraform-inventory
+    after: apply
+    expected_resources:
+      aws_vpc.main:
+        count: 1
+        attributes:
+          cidr_block: "10.0.0.0/16"
+      aws_subnet.public:
+        min_count: 2
+      aws_internet_gateway.main:
+        count: 1
+      aws_instance.app:
+        min_count: 2
+        max_count: 3
+        attributes:
+          associate_public_ip_address: true
+      aws_lb.main:
+        count: 1
+        attributes:
+          load_balancer_type: "application"
+      aws_lb_target_group.main:
+        count: 1
+        attributes:
+          port: 80
+          protocol: "HTTP"
+
+  - name: http-health-check
+    type: http
+    url: "http://${output.alb_dns_name}/health"
+    expected_status: 200
+    retries: 10
+    delay: 15s
+
+  - name: destroy
+    type: terraform
+    command: terraform destroy -auto-approve
+    when: always
+
+reporting:
+  output: ./reports/${module}/${name}-$(date +%Y%m%d-%H%M%S).html
+  formats: [html, json]
+

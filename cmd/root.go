@@ -16,8 +16,9 @@ import (
 )
 
 var (
-	debug         bool
-	localstack    bool
+	debug          bool
+	localstack     bool
+	localstackEndpoint string
 	cleanupTimeout time.Duration
 )
 
@@ -43,6 +44,7 @@ func init() {
 	rootCmd.AddCommand(runCmd)
 	runCmd.Flags().BoolVar(&debug, "debug", false, "Enable debug output")
 	runCmd.Flags().BoolVar(&localstack, "localstack", false, "Use LocalStack for AWS (development)")
+	runCmd.Flags().StringVar(&localstackEndpoint, "localstack-endpoint", "http://localhost:4566", "LocalStack endpoint URL (only used with --localstack)")
 	runCmd.Flags().DurationVar(&cleanupTimeout, "cleanup-timeout", 300*time.Second, "Timeout for cleanup operations")
 }
 
@@ -74,6 +76,12 @@ func executeFlow(flowPath string) error {
 	ui.PrintInfo(fmt.Sprintf("📁 Working directory: %s", f.WorkingDir))
 	ui.PrintInfo(fmt.Sprintf("📊 Steps: %d", len(f.Steps)))
 	fmt.Println()
+
+	// Setup LocalStack environment if enabled
+	if localstack {
+		setupLocalStackEnv(localstackEndpoint)
+		ui.PrintInfo(fmt.Sprintf("🔧 LocalStack mode enabled (endpoint: %s)", localstackEndpoint))
+	}
 
 	// Create executor
 	executor, err := flow.NewExecutor(f, debug)
@@ -206,6 +214,19 @@ func indentOutput(output string) string {
 		indented[i] = "    " + line
 	}
 	return strings.Join(indented, "\n")
+}
+
+// setupLocalStackEnv configures environment variables for LocalStack
+func setupLocalStackEnv(endpoint string) {
+	os.Setenv("AWS_ENDPOINT_URL", endpoint)
+	os.Setenv("AWS_ACCESS_KEY_ID", "test")
+	os.Setenv("AWS_SECRET_ACCESS_KEY", "test")
+	os.Setenv("AWS_DEFAULT_REGION", "us-east-1")
+	os.Setenv("AWS_REGION", "us-east-1")
+	
+	// Skip cost warnings and other AWS SDK warnings
+	os.Setenv("TF_LOG", "")
+	os.Setenv("TF_LOG_PATH", "")
 }
 
 func generateReport(executor *flow.Executor) error {

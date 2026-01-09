@@ -3,6 +3,7 @@ package flow
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 )
@@ -18,6 +19,15 @@ func ParseFlow(path string) (*Flow, error) {
 	if err := yaml.Unmarshal(data, &flow); err != nil {
 		return nil, fmt.Errorf("failed to parse YAML: %w", err)
 	}
+
+	// Resolve working_dir relative to the flow file's directory
+	flowFileDir := filepath.Dir(path)
+	if !filepath.IsAbs(flow.WorkingDir) {
+		// If working_dir is relative, make it relative to the flow file
+		flow.WorkingDir = filepath.Join(flowFileDir, flow.WorkingDir)
+	}
+	// Clean the path to remove any ".." or "." components
+	flow.WorkingDir = filepath.Clean(flow.WorkingDir)
 
 	if err := validateFlow(&flow); err != nil {
 		return nil, fmt.Errorf("invalid flow: %w", err)

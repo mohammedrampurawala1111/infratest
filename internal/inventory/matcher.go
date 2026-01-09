@@ -95,8 +95,20 @@ func (m *Matcher) matchPattern(pattern string, match ResourceMatch) MatchResult 
 	}
 	
 	// Convert wildcard pattern to regex
-	nameRegexStr := strings.ReplaceAll(regexp.QuoteMeta(namePattern), "\\*", ".*")
-	nameRegex := regexp.MustCompile("^" + nameRegexStr + "$")
+	// If pattern is exactly ".*", use it directly
+	// Otherwise, if it contains *, replace * with .* and escape other chars
+	var nameRegexStr string
+	if namePattern == ".*" {
+		nameRegexStr = "^.*$"
+	} else if strings.Contains(namePattern, "*") {
+		// Escape everything first, then replace escaped \* with .*
+		escaped := regexp.QuoteMeta(namePattern)
+		nameRegexStr = "^" + strings.ReplaceAll(escaped, "\\*", ".*") + "$"
+	} else {
+		// Exact match - escape all special chars
+		nameRegexStr = "^" + regexp.QuoteMeta(namePattern) + "$"
+	}
+	nameRegex := regexp.MustCompile(nameRegexStr)
 
 	// Find matching resources
 	var matched []Resource

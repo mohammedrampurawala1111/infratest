@@ -61,6 +61,12 @@ func (e *Executor) ExecuteWithContext(ctx context.Context, command string) (stri
 	cmd := exec.CommandContext(ctx, "terraform", parts...)
 	cmd.Dir = e.workingDir
 	cmd.Env = os.Environ()
+	
+	// Suppress cost warnings if LocalStack is being used
+	if os.Getenv("AWS_ENDPOINT_URL") != "" {
+		// Add TF_IN_AUTOMATION to suppress interactive prompts
+		cmd.Env = append(cmd.Env, "TF_IN_AUTOMATION=true")
+	}
 
 	ui.PrintDebug(e.debug, "Running: terraform %s", strings.Join(parts, " "))
 	ui.PrintDebug(e.debug, "Working directory: %s", e.workingDir)

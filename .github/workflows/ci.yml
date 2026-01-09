@@ -32,7 +32,7 @@ jobs:
           go build -o infratest .
           chmod +x infratest
           # Verify the binary works
-          ./infratest --version || ./infratest --help || true
+          ./infratest --help || true
       
       - name: Start LocalStack
         run: |
@@ -41,14 +41,27 @@ jobs:
             -p 4566:4566 \
             -e SERVICES=ec2,s3,vpc,iam,sts,elbv2 \
             -e DEBUG=1 \
+            -e DOCKER_HOST=unix:///var/run/docker.sock \
             localstack/localstack:latest
       
       - name: Wait for LocalStack to be ready
         run: |
           echo "Waiting for LocalStack to be ready..."
-          timeout 60 bash -c 'until curl -s http://localhost:4566/_localstack/health | grep -q "\"status\": \"running\""; do sleep 2; done'
-          echo "LocalStack is ready!"
-          curl http://localhost:4566/_localstack/health
+          max_attempts=30
+          attempt=0
+          while [ $attempt -lt $max_attempts ]; do
+            if curl -s http://localhost:4566/_localstack/health | grep -q '"status": "running"'; then
+              echo "LocalStack is ready!"
+              curl http://localhost:4566/_localstack/health
+              exit 0
+            fi
+            attempt=$((attempt + 1))
+            echo "Attempt $attempt/$max_attempts: LocalStack not ready yet, waiting 5 seconds..."
+            sleep 5
+          done
+          echo "LocalStack failed to start after $max_attempts attempts"
+          docker logs localstack --tail 50
+          exit 1
       
       - name: Run infratest on simple-vpc example
         working-directory: examples/simple-vpc

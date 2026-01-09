@@ -1,0 +1,51 @@
+name: basic-vpc-test
+description: Deploy simple VPC and verify resources
+
+working_dir: ./terraform/vpc   # relative or absolute path where terraform files live
+
+environment:
+  provider: aws
+  # No credentials here — use existing AWS SDK defaults / env vars
+
+steps:
+  - name: init-and-plan
+    type: terraform
+    commands:
+      - terraform init
+      - terraform plan -out=plan.tfplan
+
+  - name: apply
+    type: terraform
+    command: terraform apply -auto-approve plan.tfplan
+
+  - name: inventory-check
+    type: terraform-inventory
+    after: apply
+    expected:
+      resources:
+        - type: aws_vpc
+          min_count: 1
+          max_count: 1
+        - type: aws_subnet
+          min_count: 2
+        - type: aws_internet_gateway
+          min_count: 1
+    fail_on_extra: false  # Allow other resources (ALB, security groups, etc.)
+    fail_on_missing: true
+
+  - name: http-health-check
+    type: http
+    url: "http://${output.alb_dns}/health"   # support terraform output interpolation
+    expected_status: 503
+    retries: 8
+    delay: 10s
+
+  - name: destroy
+    type: terraform
+    command: terraform destroy -auto-approve
+    when: always   # always, on-success, on-failure
+
+reporting:
+  output: ./reports/${module}/${name}-$(date +%Y%m%d-%H%M%S).html
+  formats: [html, json]
+

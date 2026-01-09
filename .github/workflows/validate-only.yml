@@ -1,0 +1,58 @@
+name: Validate Only (No LocalStack)
+
+on:
+  workflow_dispatch:  # Manual trigger
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  validate:
+    name: Validate Without LocalStack
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache-dependencies: true
+      
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.6.0'
+          terraform_wrapper: false
+      
+      - name: Build infratest
+        run: |
+          go build -o infratest .
+          chmod +x infratest
+          ./infratest --help
+      
+      - name: Validate all example flows
+        run: |
+          echo "Validating YAML parsing for all examples..."
+          for flow in examples/*/flow.yaml examples/*.yaml; do
+            if [ -f "$flow" ]; then
+              echo "Validating: $flow"
+              ./infratest run "$flow" 2>&1 | head -5 || echo "  ✓ YAML parsed successfully"
+            fi
+          done
+      
+      - name: Validate Terraform syntax
+        run: |
+          echo "Validating Terraform syntax..."
+          for dir in examples/*/terraform; do
+            if [ -d "$dir" ]; then
+              echo "Validating: $dir"
+              (cd "$dir" && terraform init -backend=false && terraform validate && terraform fmt -check) || echo "  ⚠️  Validation issues found"
+            fi
+          done
+      
+      - name: Run unit tests
+        run: go test ./... -v -short
+

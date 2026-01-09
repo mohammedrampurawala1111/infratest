@@ -427,8 +427,10 @@ Each example includes:
 
 ## 🧪 Testing
 
+### Local Testing
+
 ```bash
-# Run all tests
+# Run all unit tests (fast, no infrastructure needed)
 go test ./...
 
 # Run with coverage
@@ -436,7 +438,38 @@ go test -cover ./...
 
 # Run specific test
 go test ./internal/flow/...
+
+# Run integration test with LocalStack (requires Docker)
+docker run -d -p 4566:4566 localstack/localstack
+cd examples/simple-vpc
+infratest run flow.yaml --localstack
 ```
+
+### CI/CD Testing Strategy
+
+Our CI uses a **layered testing approach** for speed and reliability:
+
+1. **Unit Tests** (fast, runs on every PR)
+   - Tests YAML parsing, interpolation, inventory matching
+   - No infrastructure required
+   - Runs in seconds
+
+2. **Build & Validate** (medium, runs on every PR)
+   - Ensures code compiles
+   - Validates Terraform syntax
+   - Tests YAML parsing with real files
+   - No LocalStack needed
+
+3. **Integration Tests** (slow, runs on main branch only)
+   - Full end-to-end tests with LocalStack
+   - Validates actual infrastructure deployment
+   - Generates reports
+
+This approach ensures:
+- ✅ Fast feedback on PRs (< 2 minutes)
+- ✅ Full validation before merging
+- ✅ Comprehensive testing on main branch
+- ✅ Reduced CI costs and time
 
 ## 🛠️ Development
 

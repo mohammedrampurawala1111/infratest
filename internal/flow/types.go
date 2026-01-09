@@ -15,6 +15,7 @@ type Flow struct {
 // Environment configuration
 type Environment struct {
 	Provider string `yaml:"provider"`
+	Endpoint string `yaml:"endpoint,omitempty"` // Optional endpoint override (for LocalStack)
 }
 
 // Step represents a single step in the flow

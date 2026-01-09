@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -79,8 +80,22 @@ func executeFlow(flowPath string) error {
 
 	// Setup LocalStack environment if enabled
 	if localstack {
-		setupLocalStackEnv(localstackEndpoint)
-		ui.PrintInfo(fmt.Sprintf("🔧 LocalStack mode enabled (endpoint: %s)", localstackEndpoint))
+		// Check if YAML provides endpoint override
+		endpoint := localstackEndpoint
+		if f.Environment.Endpoint != "" {
+			endpoint = f.Environment.Endpoint
+			ui.PrintInfo(fmt.Sprintf("🔧 Using endpoint from YAML: %s", endpoint))
+		}
+		
+		// Check if LocalStack is reachable
+		if err := checkLocalStackAvailability(endpoint); err != nil {
+			ui.PrintWarning(fmt.Sprintf("⚠️  LocalStack not detected at %s", endpoint))
+			showLocalStackStartInstructions(endpoint)
+			return fmt.Errorf("LocalStack not available: %w", err)
+		}
+		
+		setupLocalStackEnv(endpoint)
+		ui.PrintInfo(fmt.Sprintf("🔧 LocalStack mode enabled (endpoint: %s)", endpoint))
 	}
 
 	// Create executor
@@ -228,6 +243,67 @@ func setupLocalStackEnv(endpoint string) {
 	// Skip cost warnings and other AWS SDK warnings
 	os.Setenv("TF_LOG", "")
 	os.Setenv("TF_LOG_PATH", "")
+	
+	// Suppress Terraform cost estimation warnings
+	os.Setenv("TF_IN_AUTOMATION", "true")
+}
+
+// checkLocalStackAvailability checks if LocalStack is reachable at the given endpoint
+func checkLocalStackAvailability(endpoint string) error {
+	// Try to connect to LocalStack health endpoint
+	// LocalStack typically exposes a health check at /_localstack/health
+	client := &http.Client{
+		Timeout: 2 * time.Second,
+	}
+	
+	healthURL := strings.TrimSuffix(endpoint, "/") + "/_localstack/health"
+	resp, err := client.Get(healthURL)
+	if err != nil {
+		return fmt.Errorf("cannot connect to LocalStack: %w", err)
+	}
+	defer resp.Body.Close()
+	
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("LocalStack health check returned status %d", resp.StatusCode)
+	}
+	
+	return nil
+}
+
+// showLocalStackStartInstructions shows helpful instructions for starting LocalStack
+func showLocalStackStartInstructions(endpoint string) {
+	fmt.Println()
+	ui.PrintInfo("To start LocalStack, run one of the following:")
+	fmt.Println()
+	
+	ui.PrintInfo("Option 1: Docker (Recommended)")
+	fmt.Printf("  docker run -d -p 4566:4566 localstack/localstack\n")
+	fmt.Println()
+	
+	ui.PrintInfo("Option 2: LocalStack CLI")
+	fmt.Printf("  localstack start\n")
+	fmt.Println()
+	
+	ui.PrintInfo("Option 3: Docker Compose")
+	fmt.Printf("  # Create docker-compose.yml:\n")
+	fmt.Printf("  version: '3.8'\n")
+	fmt.Printf("  services:\n")
+	fmt.Printf("    localstack:\n")
+	fmt.Printf("      image: localstack/localstack\n")
+	fmt.Printf("      ports:\n")
+	fmt.Printf("        - \"4566:4566\"\n")
+	fmt.Printf("      environment:\n")
+	fmt.Printf("        - SERVICES=ec2,s3,vpc,iam,sts\n")
+	fmt.Printf("  docker-compose up -d\n")
+	fmt.Println()
+	
+	ui.PrintInfo("After starting LocalStack, verify it's running:")
+	fmt.Printf("  curl %s/_localstack/health\n", endpoint)
+	fmt.Println()
+	
+	ui.PrintWarning("Note: If LocalStack is running on a different endpoint, use:")
+	fmt.Printf("  --localstack-endpoint <your-endpoint>\n")
+	fmt.Println()
 }
 
 func generateReport(executor *flow.Executor) error {

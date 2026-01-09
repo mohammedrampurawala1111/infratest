@@ -1,0 +1,48 @@
+name: localstack-vpc-test
+description: Test VPC deployment using LocalStack (no AWS account needed)
+
+working_dir: ./terraform
+
+environment:
+  provider: aws
+  # Optional: override endpoint if LocalStack is on a different port
+  # endpoint: "http://localhost:4566"
+
+steps:
+  - name: init-and-plan
+    type: terraform
+    commands:
+      - terraform init
+      - terraform plan -out=plan.tfplan
+
+  - name: apply
+    type: terraform
+    command: terraform apply -auto-approve plan.tfplan
+
+  - name: inventory-check
+    type: terraform-inventory
+    after: apply
+    expected_resources:
+      aws_vpc.main:
+        count: 1
+        attributes:
+          cidr_block: "10.0.0.0/16"
+          enable_dns_hostnames: true
+          enable_dns_support: true
+      aws_subnet.public:
+        min_count: 2
+        max_count: 3
+        attributes:
+          map_public_ip_on_launch: true
+      aws_internet_gateway.main:
+        count: 1
+
+  - name: destroy
+    type: terraform
+    command: terraform destroy -auto-approve
+    when: always
+
+reporting:
+  output: ./reports/${module}/${name}-$(date +%Y%m%d-%H%M%S).html
+  formats: [html, json]
+

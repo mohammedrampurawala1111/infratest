@@ -96,9 +96,35 @@ Step 4/4: destroy ... [OK] 18s
 
 ## 🐳 LocalStack Usage
 
-Test your infrastructure locally without AWS costs!
+Test your infrastructure locally without AWS costs! LocalStack provides a fully functional local AWS cloud stack that runs in Docker.
 
-### Start LocalStack
+### Why Use LocalStack?
+
+- 💰 **No AWS costs** - Test freely without spending money
+- ⚡ **Fast iteration** - No waiting for real AWS API calls
+- 🔒 **Offline development** - Work without internet or AWS credentials
+- 🧪 **Safe testing** - Experiment without affecting production resources
+- 🚀 **CI/CD friendly** - Run tests in containers without AWS setup
+
+### Quick Start
+
+1. **Start LocalStack:**
+   ```bash
+   docker run -d -p 4566:4566 localstack/localstack
+   ```
+
+2. **Run your test:**
+   ```bash
+   infratest run flow.yaml --localstack
+   ```
+
+That's it! The `--localstack` flag automatically:
+- Sets `AWS_ENDPOINT_URL=http://localhost:4566`
+- Configures test credentials (`AWS_ACCESS_KEY_ID=test`, etc.)
+- Suppresses cost warnings
+- Validates LocalStack is running before starting
+
+### Starting LocalStack
 
 **Option 1: Docker (Recommended)**
 ```bash
@@ -107,28 +133,84 @@ docker run -d -p 4566:4566 localstack/localstack
 
 **Option 2: LocalStack CLI**
 ```bash
+# Install LocalStack CLI first
+pip install localstack
+
+# Start LocalStack
 localstack start
 ```
 
-### Run Tests with LocalStack
+**Option 3: Docker Compose**
+```yaml
+# docker-compose.yml
+version: '3.8'
+services:
+  localstack:
+    image: localstack/localstack
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=ec2,s3,vpc,iam,sts,elbv2
+```
 
 ```bash
-infratest run flow.yaml --localstack
+docker-compose up -d
 ```
+
+### Verifying LocalStack is Running
+
+```bash
+curl http://localhost:4566/_localstack/health
+```
+
+Should return: `{"status": "running"}`
 
 ### Custom Endpoint
 
+If LocalStack is running on a different endpoint:
+
+**Via Flag:**
 ```bash
 infratest run flow.yaml --localstack --localstack-endpoint http://localhost:4566
 ```
 
+**Via YAML:**
+```yaml
+environment:
+  provider: aws
+  endpoint: "http://localhost:4566"  # Overrides flag endpoint
+```
+
 ### What LocalStack Provides
 
-- ✅ Full AWS API compatibility
-- ✅ No AWS costs
-- ✅ Fast iteration
-- ✅ Offline development
+- ✅ Full AWS API compatibility for most services
+- ✅ EC2, VPC, S3, IAM, Lambda, and more
+- ✅ No AWS costs or credentials needed
+- ✅ Fast local execution
 - ⚠️ Some advanced features may have limitations
+- ⚠️ Not all AWS services are fully supported
+
+### Troubleshooting
+
+**LocalStack not detected:**
+```
+⚠️  LocalStack not detected at http://localhost:4566
+```
+
+Make sure LocalStack is running:
+```bash
+docker ps | grep localstack
+# Or
+curl http://localhost:4566/_localstack/health
+```
+
+**Different port:**
+```bash
+infratest run flow.yaml --localstack --localstack-endpoint http://localhost:5000
+```
+
+**Cost warnings still appear:**
+The `--localstack` flag automatically suppresses cost warnings. If you still see them, ensure the flag is set correctly.
 
 ## 📝 YAML Flow Syntax
 
@@ -288,16 +370,39 @@ reports/
 
 We provide complete, ready-to-run examples:
 
-### 1. Simple VPC (`examples/simple-vpc/`)
+### 1. LocalStack Example (`examples/localstack-example/`) ⭐ **Recommended for beginners**
 
-Basic VPC with subnets and internet gateway.
+Perfect starting point! Test infrastructure locally without AWS account or costs.
 
 ```bash
-cd examples/simple-vpc
-infratest run flow.yaml
+# Start LocalStack
+docker run -d -p 4566:4566 localstack/localstack
+
+# Run the test
+cd examples/localstack-example
+infratest run flow.yaml --localstack
 ```
 
-### 2. ALB + EC2 (`examples/alb-ec2/`)
+**Why start here?**
+- ✅ No AWS account needed
+- ✅ No costs
+- ✅ Fast and safe
+- ✅ Learn the basics quickly
+
+### 2. Simple VPC (`examples/simple-vpc/`)
+
+Basic VPC with subnets and internet gateway. Works with both AWS and LocalStack.
+
+```bash
+# With AWS
+cd examples/simple-vpc
+infratest run flow.yaml
+
+# With LocalStack
+infratest run flow.yaml --localstack
+```
+
+### 3. ALB + EC2 (`examples/alb-ec2/`)
 
 Complete application stack with load balancer and EC2 instances.
 
@@ -306,7 +411,7 @@ cd examples/alb-ec2
 infratest run flow.yaml
 ```
 
-### 3. EC2 Test (`examples/ec2-test.yaml`)
+### 4. EC2 Test (`examples/ec2-test.yaml`)
 
 EC2 instance with web server and health checks.
 

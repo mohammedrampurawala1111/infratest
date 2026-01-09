@@ -1,0 +1,92 @@
+name: Integration Tests (LocalStack)
+
+on:
+  workflow_dispatch:  # Manual trigger only
+  schedule:
+    # Run nightly at 2 AM UTC
+    - cron: '0 2 * * *'
+
+jobs:
+  integration-tests:
+    name: Integration Tests with LocalStack
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache-dependencies: true
+      
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.6.0'
+          terraform_wrapper: false
+      
+      - name: Build infratest
+        run: |
+          go build -o infratest .
+          chmod +x infratest
+      
+      - name: Start LocalStack
+        run: |
+          docker run -d \
+            --name localstack \
+            -p 4566:4566 \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -e SERVICES=ec2,s3,vpc,iam,sts,elbv2 \
+            -e DEBUG=0 \
+            -e PERSISTENCE=0 \
+            -e DOCKER_HOST=unix:///var/run/docker.sock \
+            -e SKIP_INFRA_DOWNLOADS=1 \
+            localstack/localstack:latest
+      
+      - name: Wait for LocalStack to be ready
+        run: |
+          echo "Waiting for LocalStack to be ready..."
+          max_attempts=30
+          attempt=0
+          while [ $attempt -lt $max_attempts ]; do
+            if curl -s http://localhost:4566/_localstack/health | grep -q '"status": "running"'; then
+              echo "LocalStack is ready!"
+              curl http://localhost:4566/_localstack/health
+              exit 0
+            fi
+            attempt=$((attempt + 1))
+            echo "Attempt $attempt/$max_attempts: LocalStack not ready yet, waiting 5 seconds..."
+            sleep 5
+          done
+          echo "LocalStack failed to start after $max_attempts attempts"
+          docker logs localstack --tail 50
+          exit 1
+      
+      - name: Run infratest on simple-vpc example
+        working-directory: examples/simple-vpc
+        run: |
+          mkdir -p reports/simple-vpc
+          ../../infratest run flow.yaml --localstack --debug
+        env:
+          INFRATEST_DEBUG_ENV: "false"
+      
+      - name: Upload HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: |
+            examples/simple-vpc/reports/**/*.html
+            examples/simple-vpc/reports/**/*.json
+          retention-days: 7
+          if-no-files-found: warn
+      
+      - name: Show LocalStack logs on failure
+        if: failure()
+        run: |
+          echo "LocalStack logs:"
+          docker logs localstack --tail 100 || true
+

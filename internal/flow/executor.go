@@ -1,12 +1,14 @@
 package flow
 
 import (
+	"context"
 	"fmt"
 	"time"
 
 	"github.com/infratest/infratest/internal/flow/interpolator"
 	"github.com/infratest/infratest/internal/http"
 	"github.com/infratest/infratest/internal/terraform"
+	"github.com/infratest/infratest/internal/ui"
 )
 
 // Executor runs a flow
@@ -34,8 +36,13 @@ func NewExecutor(flow *Flow, debug bool) (*Executor, error) {
 	}, nil
 }
 
-// Execute runs all steps in the flow
+// Execute runs all steps in the flow (without context, for backward compatibility)
 func (e *Executor) Execute() error {
+	return e.ExecuteWithContext(context.Background())
+}
+
+// ExecuteWithContext runs all steps in the flow with context support
+func (e *Executor) ExecuteWithContext(ctx context.Context) error {
 	stepMap := make(map[string]*Step)
 	for i := range e.flow.Steps {
 		stepMap[e.flow.Steps[i].Name] = &e.flow.Steps[i]
@@ -43,23 +50,28 @@ func (e *Executor) Execute() error {
 
 	executed := make(map[string]bool)
 	hasFailure := false
+	stepNum := 0
 	
 	for _, step := range e.flow.Steps {
+		// Check context cancellation
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("execution cancelled: %w", ctx.Err())
+		default:
+		}
+		
 		// Check if step should run based on 'when' condition
 		if step.When == "on-success" && hasFailure {
-			if e.debug {
-				fmt.Printf("[DEBUG] Skipping step %s (when: on-success, but previous step failed)\n", step.Name)
-			}
+			ui.PrintDebug(e.debug, "Skipping step %s (when: on-success, but previous step failed)", step.Name)
 			continue
 		}
 		if step.When == "on-failure" && !hasFailure {
-			if e.debug {
-				fmt.Printf("[DEBUG] Skipping step %s (when: on-failure, but no previous failure)\n", step.Name)
-			}
+			ui.PrintDebug(e.debug, "Skipping step %s (when: on-failure, but no previous failure)", step.Name)
 			continue
 		}
 
-		err := e.executeStep(step, stepMap, executed)
+		stepNum++
+		err := e.executeStepWithContext(ctx, step, stepMap, executed)
 		executed[step.Name] = true
 
 		if err != nil {
@@ -67,9 +79,7 @@ func (e *Executor) Execute() error {
 			// Check if we should continue based on 'when' condition
 			if step.When == "always" {
 				// Continue even on error
-				if e.debug {
-					fmt.Printf("[DEBUG] Step %s failed but continuing (when: always)\n", step.Name)
-				}
+				ui.PrintDebug(e.debug, "Step %s failed but continuing (when: always)", step.Name)
 				continue
 			}
 			return err
@@ -79,7 +89,17 @@ func (e *Executor) Execute() error {
 	return nil
 }
 
+// executeStep is a wrapper for backward compatibility
 func (e *Executor) executeStep(step Step, stepMap map[string]*Step, executed map[string]bool) error {
+	return e.executeStepWithContext(context.Background(), step, stepMap, executed)
+}
+
+// ExecuteStepWithContext executes a single step with context (public for cleanup manager)
+func (e *Executor) ExecuteStepWithContext(ctx context.Context, step Step, stepMap map[string]*Step, executed map[string]bool) error {
+	return e.executeStepWithContext(ctx, step, stepMap, executed)
+}
+
+func (e *Executor) executeStepWithContext(ctx context.Context, step Step, stepMap map[string]*Step, executed map[string]bool) error {
 	// Check dependencies
 	if step.After != "" {
 		if !executed[step.After] {
@@ -87,9 +107,21 @@ func (e *Executor) executeStep(step Step, stepMap map[string]*Step, executed map
 		}
 	}
 
-	if e.debug {
-		fmt.Printf("[DEBUG] Executing step: %s (type: %s)\n", step.Name, step.Type)
+	// Find step number for progress display
+	stepNum := 1
+	totalSteps := len(e.flow.Steps)
+	for i, s := range e.flow.Steps {
+		if s.Name == step.Name {
+			stepNum = i + 1
+			break
+		}
 	}
+
+	// Print step start
+	ui.PrintStep(stepNum, totalSteps, step.Name)
+	fmt.Print(" ... ")
+	
+	ui.PrintDebug(e.debug, "Executing step: %s (type: %s)", step.Name, step.Type)
 
 	start := time.Now()
 	result := StepResult{
@@ -102,7 +134,7 @@ func (e *Executor) executeStep(step Step, stepMap map[string]*Step, executed map
 
 	switch step.Type {
 	case "terraform":
-		output, err = e.executeTerraformStep(step)
+		output, err = e.executeTerraformStepWithContext(ctx, step)
 		result.Output = output
 		result.Success = err == nil
 
@@ -126,14 +158,19 @@ func (e *Executor) executeStep(step Step, stepMap map[string]*Step, executed map
 	result.Error = err
 	e.results = append(e.results, result)
 
+	// Print step result with colored output
+	duration := result.Duration.Round(time.Second).String()
 	if err != nil {
+		ui.PrintProgress(stepNum, totalSteps, step.Name, "FAIL", duration)
 		return fmt.Errorf("step %s failed: %w", step.Name, err)
 	}
+	
+	ui.PrintProgress(stepNum, totalSteps, step.Name, "OK", duration)
 
 	return nil
 }
 
-func (e *Executor) executeTerraformStep(step Step) (string, error) {
+func (e *Executor) executeTerraformStepWithContext(ctx context.Context, step Step) (string, error) {
 	// Refresh outputs before each terraform step
 	outputs, err := terraform.GetOutputs(e.flow.WorkingDir)
 	if err == nil {
@@ -143,7 +180,7 @@ func (e *Executor) executeTerraformStep(step Step) (string, error) {
 	if step.Command != "" {
 		// Interpolate terraform outputs in command
 		cmd := interpolator.Interpolate(step.Command, e.outputs)
-		return e.executor.Execute(cmd)
+		return e.executor.ExecuteWithContext(ctx, cmd)
 	}
 
 	if len(step.Commands) > 0 {
@@ -152,7 +189,7 @@ func (e *Executor) executeTerraformStep(step Step) (string, error) {
 		for i, cmd := range step.Commands {
 			interpolated[i] = interpolator.Interpolate(cmd, e.outputs)
 		}
-		return e.executor.ExecuteMultiple(interpolated)
+		return e.executor.ExecuteMultipleWithContext(ctx, interpolated)
 	}
 
 	return "", fmt.Errorf("no command or commands specified for terraform step")
@@ -170,10 +207,10 @@ func (e *Executor) executeInventoryStep(step Step) ([]Resource, error) {
 	}
 
 	allResources := state.GetResources()
+	ui.PrintDebug(e.debug, "Found %d managed resources in state", len(allResources))
 	if e.debug {
-		fmt.Printf("[DEBUG] Found %d managed resources in state\n", len(allResources))
 		for _, r := range allResources {
-			fmt.Printf("[DEBUG]   - %s (id: %s)\n", r.Type, r.ID)
+			ui.PrintDebug(e.debug, "  - %s (id: %s)", r.Type, r.ID)
 		}
 	}
 
@@ -233,23 +270,21 @@ func (e *Executor) executeHTTPStep(step Step) (int, error) {
 	outputs, err := terraform.GetOutputs(e.flow.WorkingDir)
 	if err == nil {
 		e.outputs = outputs
+		ui.PrintDebug(e.debug, "Refreshed terraform outputs:")
 		if e.debug {
-			fmt.Printf("[DEBUG] Refreshed terraform outputs:\n")
 			for k, v := range e.outputs {
-				fmt.Printf("[DEBUG]   %s = %v\n", k, v)
+				ui.PrintDebug(e.debug, "  %s = %v", k, v)
 			}
 		}
-	} else if e.debug {
-		fmt.Printf("[DEBUG] Warning: failed to refresh outputs: %v\n", err)
+	} else {
+		ui.PrintDebug(e.debug, "Warning: failed to refresh outputs: %v", err)
 	}
 
 	// Interpolate URL with terraform outputs
 	url := interpolator.Interpolate(step.URL, e.outputs)
 	
-	if e.debug {
-		fmt.Printf("[DEBUG] Original URL template: %s\n", step.URL)
-		fmt.Printf("[DEBUG] Interpolated URL: %s\n", url)
-	}
+	ui.PrintDebug(e.debug, "Original URL template: %s", step.URL)
+	ui.PrintDebug(e.debug, "Interpolated URL: %s", url)
 
 	// Parse delay
 	delay, err := time.ParseDuration(step.Delay)

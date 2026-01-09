@@ -9,9 +9,11 @@ import (
 
 // Resource represents a Terraform resource from state
 type Resource struct {
-	Type string
-	ID   string
-	Name string
+	Type       string
+	ID         string
+	Name       string
+	Address    string
+	Attributes map[string]interface{}
 }
 
 // State represents Terraform state structure
@@ -68,16 +70,23 @@ func (s *State) GetResources() []Resource {
 		}
 
 		id := ""
+		attributes := make(map[string]interface{})
 		if sr.Values != nil {
 			if idVal, ok := sr.Values["id"].(string); ok {
 				id = idVal
 			}
+			// Copy all attributes
+			for k, v := range sr.Values {
+				attributes[k] = v
+			}
 		}
 
 		resources = append(resources, Resource{
-			Type: sr.Type,
-			ID:   id,
-			Name: sr.Name,
+			Type:       sr.Type,
+			ID:         id,
+			Name:       sr.Name,
+			Address:    sr.Address,
+			Attributes: attributes,
 		})
 	}
 	return resources
@@ -94,32 +103,8 @@ func (s *State) GetResourcesByType(resourceType string) []Resource {
 	return filtered
 }
 
-// GetOutputs reads Terraform outputs
+// GetOutputs reads Terraform outputs (uses ParseOutputs for consistency)
 func GetOutputs(workingDir string) (map[string]interface{}, error) {
-	cmd := exec.Command("terraform", "output", "-json")
-	cmd.Dir = workingDir
-	cmd.Env = os.Environ()
-
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("failed to read terraform outputs: %w", err)
-	}
-
-	var outputs map[string]interface{}
-	if err := json.Unmarshal(output, &outputs); err != nil {
-		return nil, fmt.Errorf("failed to parse terraform outputs: %w", err)
-	}
-
-	// Extract values from output structure
-	result := make(map[string]interface{})
-	for key, val := range outputs {
-		if outputMap, ok := val.(map[string]interface{}); ok {
-			if value, exists := outputMap["value"]; exists {
-				result[key] = value
-			}
-		}
-	}
-
-	return result, nil
+	return ParseOutputs(workingDir)
 }
 

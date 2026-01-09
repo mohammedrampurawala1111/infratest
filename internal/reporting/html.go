@@ -33,7 +33,7 @@ type ResourceInfo struct {
 }
 
 // GenerateHTMLReport creates an HTML report
-func GenerateHTMLReport(f FlowInfo, results []StepResultInfo, outputPath string) error {
+func GenerateHTMLReport(f FlowInfo, results []StepResultInfo, outputPath string, outputs map[string]interface{}) error {
 	html := `<!DOCTYPE html>
 <html>
 <head>
@@ -90,8 +90,43 @@ func GenerateHTMLReport(f FlowInfo, results []StepResultInfo, outputPath string)
             <p><strong>Failed:</strong> <span style="color: #f44336;">%d</span></p>
             <p><strong>Total Duration:</strong> %s</p>
         </div>
-        <h2>Step Results</h2>
+        <h2>Terraform Outputs</h2>
 `, len(results), successCount, failureCount, totalDuration.Round(time.Millisecond))
+	
+	// Add outputs table if available
+	if outputs != nil && len(outputs) > 0 {
+		html += `        <div class="summary">
+            <table style="width: 100%%; border-collapse: collapse;">
+                <thead>
+                    <tr style="background: #f0f0f0;">
+                        <th style="padding: 10px; text-align: left; border: 1px solid #ddd;">Output Name</th>
+                        <th style="padding: 10px; text-align: left; border: 1px solid #ddd;">Value</th>
+                    </tr>
+                </thead>
+                <tbody>
+`
+		for key, val := range outputs {
+			valueStr := formatOutputValue(val)
+			html += fmt.Sprintf(`                    <tr>
+                        <td style="padding: 10px; border: 1px solid #ddd; font-weight: bold;">%s</td>
+                        <td style="padding: 10px; border: 1px solid #ddd; font-family: monospace;">%s</td>
+                    </tr>
+`, escapeHTML(key), escapeHTML(valueStr))
+		}
+		html += `                </tbody>
+            </table>
+        </div>
+`
+	} else {
+		html += `        <div class="summary">
+            <p><em>No outputs available</em></p>
+        </div>
+`
+	}
+
+	html += `
+        <h2>Step Results</h2>
+`
 
 	// Add step results
 	for _, result := range results {
@@ -142,6 +177,27 @@ func GenerateHTMLReport(f FlowInfo, results []StepResultInfo, outputPath string)
 </html>`
 
 	return os.WriteFile(outputPath, []byte(html), 0644)
+}
+
+func formatOutputValue(val interface{}) string {
+	switch v := val.(type) {
+	case string:
+		return v
+	case []interface{}:
+		parts := make([]string, len(v))
+		for i, item := range v {
+			parts[i] = fmt.Sprintf("%v", item)
+		}
+		return "[" + strings.Join(parts, ", ") + "]"
+	case map[string]interface{}:
+		parts := make([]string, 0)
+		for k, v := range v {
+			parts = append(parts, fmt.Sprintf("%s: %v", k, v))
+		}
+		return "{" + strings.Join(parts, ", ") + "}"
+	default:
+		return fmt.Sprintf("%v", v)
+	}
 }
 
 func escapeHTML(s string) string {

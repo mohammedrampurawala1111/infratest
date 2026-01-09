@@ -3,10 +3,12 @@ package flow
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/infratest/infratest/internal/flow/interpolator"
 	"github.com/infratest/infratest/internal/http"
+	"github.com/infratest/infratest/internal/inventory"
 	"github.com/infratest/infratest/internal/terraform"
 	"github.com/infratest/infratest/internal/ui"
 )
@@ -180,7 +182,17 @@ func (e *Executor) executeTerraformStepWithContext(ctx context.Context, step Ste
 	if step.Command != "" {
 		// Interpolate terraform outputs in command
 		cmd := interpolator.Interpolate(step.Command, e.outputs)
-		return e.executor.ExecuteWithContext(ctx, cmd)
+		output, err := e.executor.ExecuteWithContext(ctx, cmd)
+		
+		// Auto-refresh outputs after successful apply
+		if err == nil && strings.Contains(step.Command, "apply") {
+			if newOutputs, err2 := terraform.GetOutputs(e.flow.WorkingDir); err2 == nil {
+				e.outputs = newOutputs
+				ui.PrintDebug(e.debug, "Refreshed outputs after apply")
+			}
+		}
+		
+		return output, err
 	}
 
 	if len(step.Commands) > 0 {
@@ -189,17 +201,28 @@ func (e *Executor) executeTerraformStepWithContext(ctx context.Context, step Ste
 		for i, cmd := range step.Commands {
 			interpolated[i] = interpolator.Interpolate(cmd, e.outputs)
 		}
-		return e.executor.ExecuteMultipleWithContext(ctx, interpolated)
+		output, err := e.executor.ExecuteMultipleWithContext(ctx, interpolated)
+		
+		// Auto-refresh outputs after successful apply
+		if err == nil {
+			for _, cmd := range step.Commands {
+				if strings.Contains(cmd, "apply") {
+					if newOutputs, err2 := terraform.GetOutputs(e.flow.WorkingDir); err2 == nil {
+						e.outputs = newOutputs
+						ui.PrintDebug(e.debug, "Refreshed outputs after apply")
+					}
+					break
+				}
+			}
+		}
+		
+		return output, err
 	}
 
 	return "", fmt.Errorf("no command or commands specified for terraform step")
 }
 
 func (e *Executor) executeInventoryStep(step Step) ([]Resource, error) {
-	if step.Expected == nil {
-		return nil, fmt.Errorf("expected resources not specified")
-	}
-
 	// Get current state
 	state, err := terraform.GetState(e.flow.WorkingDir)
 	if err != nil {
@@ -210,8 +233,18 @@ func (e *Executor) executeInventoryStep(step Step) ([]Resource, error) {
 	ui.PrintDebug(e.debug, "Found %d managed resources in state", len(allResources))
 	if e.debug {
 		for _, r := range allResources {
-			ui.PrintDebug(e.debug, "  - %s (id: %s)", r.Type, r.ID)
+			ui.PrintDebug(e.debug, "  - %s.%s (id: %s)", r.Type, r.Name, r.ID)
 		}
+	}
+
+	// Check if using new advanced inventory format
+	if len(step.ExpectedResources) > 0 {
+		return e.executeAdvancedInventory(step, allResources)
+	}
+
+	// Legacy format support
+	if step.Expected == nil {
+		return nil, fmt.Errorf("expected resources not specified")
 	}
 
 	var foundResources []Resource
@@ -259,6 +292,72 @@ func (e *Executor) executeInventoryStep(step Step) ([]Resource, error) {
 			if !expectedTypes[r.Type] {
 				return nil, fmt.Errorf("unexpected resource found: %s (id: %s)", r.Type, r.ID)
 			}
+		}
+	}
+
+	return foundResources, nil
+}
+
+func (e *Executor) executeAdvancedInventory(step Step, allResources []terraform.Resource) ([]Resource, error) {
+	// Convert terraform resources to inventory resources
+	inventoryResources := make([]inventory.Resource, len(allResources))
+	for i, r := range allResources {
+		inventoryResources[i] = inventory.Resource{
+			Type:       r.Type,
+			Name:       r.Name,
+			Address:    r.Address,
+			ID:         r.ID,
+			Attributes: r.Attributes,
+		}
+	}
+
+	// Parse expected resources
+	expected := make(map[string]inventory.ResourceMatch)
+	for pattern, match := range step.ExpectedResources {
+		// Parse pattern like "aws_vpc.main" or "aws_subnet.*"
+		parts := strings.SplitN(pattern, ".", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid resource pattern: %s (expected format: type.name)", pattern)
+		}
+
+		resourceType := parts[0]
+		resourceName := parts[1]
+
+		expected[pattern] = inventory.ResourceMatch{
+			Type:       resourceType,
+			Name:       resourceName,
+			Count:      match.Count,
+			MinCount:   match.MinCount,
+			MaxCount:   match.MaxCount,
+			Attributes: match.Attributes,
+		}
+	}
+
+	// Create matcher and match
+	matcher := inventory.NewMatcher(inventoryResources)
+	results, globalIssues := matcher.Match(expected)
+
+	// Check for failures
+	var allIssues []string
+	for pattern, result := range results {
+		if !result.Matched {
+			allIssues = append(allIssues, fmt.Sprintf("Pattern %s: %s", pattern, strings.Join(result.Issues, "; ")))
+		}
+	}
+	allIssues = append(allIssues, globalIssues...)
+
+	if len(allIssues) > 0 {
+		return nil, fmt.Errorf("inventory check failed:\n%s", strings.Join(allIssues, "\n"))
+	}
+
+	// Convert matched resources to result format
+	var foundResources []Resource
+	for _, result := range results {
+		for _, res := range result.Resources {
+			foundResources = append(foundResources, Resource{
+				Type: res.Type,
+				ID:   res.ID,
+			})
 		}
 	}
 

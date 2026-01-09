@@ -278,7 +278,7 @@ func generateReport(executor *flow.Executor) error {
 		var err error
 		switch format {
 		case "html":
-			err = reporting.GenerateHTMLReport(flowInfo, stepResults, outputPath)
+			err = reporting.GenerateHTMLReport(flowInfo, stepResults, outputPath, outputs)
 		case "json":
 			jsonPath := strings.TrimSuffix(outputPath, filepath.Ext(outputPath)) + ".json"
 			err = reporting.GenerateJSONReport(flowInfo, stepResults, jsonPath)

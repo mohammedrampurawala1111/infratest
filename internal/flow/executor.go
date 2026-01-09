@@ -134,6 +134,17 @@ func (e *Executor) executeStepWithContext(ctx context.Context, step Step, stepMa
 	var err error
 	var output string
 
+	// Check context timeout before executing step
+	select {
+	case <-ctx.Done():
+		result.Error = fmt.Errorf("step cancelled: %w", ctx.Err())
+		result.Success = false
+		result.Duration = time.Since(start)
+		e.results = append(e.results, result)
+		return fmt.Errorf("step %s cancelled: %w", step.Name, ctx.Err())
+	default:
+	}
+
 	switch step.Type {
 	case "terraform":
 		output, err = e.executeTerraformStepWithContext(ctx, step)

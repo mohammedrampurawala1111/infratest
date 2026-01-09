@@ -65,9 +65,11 @@ func (cm *CleanupManager) Context() context.Context {
 // RunCleanup runs cleanup steps (steps with when: always)
 func (cm *CleanupManager) RunCleanup() error {
 	if cm.interrupted {
-		ui.PrintWarning("\n⚠️  Interrupt received. Running cleanup steps...")
+		ui.PrintWarning("\n⚠️  Cleanup triggered by interrupt (SIGINT/SIGTERM) — attempting destroy...")
+		ui.PrintWarning(fmt.Sprintf("   Cleanup timeout: %v", cm.timeout))
 	} else {
 		ui.PrintInfo("\n🧹 Running cleanup steps...")
+		ui.PrintInfo(fmt.Sprintf("   Cleanup timeout: %v", cm.timeout))
 	}
 	
 	// Create a context with timeout for cleanup
@@ -87,50 +89,110 @@ func (cm *CleanupManager) RunCleanup() error {
 		executed[result.StepName] = true
 	}
 	
-	cleanupExecuted := 0
-	for _, step := range flow.Steps {
-		if step.When == "always" && !executed[step.Name] {
-			select {
-			case <-cleanupCtx.Done():
-				return fmt.Errorf("cleanup timeout after %v", cm.timeout)
-			default:
-			}
-			
-			ui.PrintInfo(fmt.Sprintf("  Running cleanup step: %s", step.Name))
-			// Create a temporary executor context for cleanup
-			// We need to execute the step, so we'll use the executor's internal method
-			// For now, we'll execute it directly through the flow executor
-			err := cm.executor.ExecuteStepWithContext(cleanupCtx, step, stepMap, executed)
-			if err != nil {
-				ui.PrintError("Cleanup step %s failed: %v", step.Name, err)
-				// Continue with other cleanup steps
-			} else {
-				cleanupExecuted++
-			}
-			executed[step.Name] = true
+	var cleanupSteps []*Step
+	for i := range flow.Steps {
+		if flow.Steps[i].When == "always" && !executed[flow.Steps[i].Name] {
+			cleanupSteps = append(cleanupSteps, &flow.Steps[i])
 		}
 	}
 	
-	if cleanupExecuted > 0 {
-		ui.PrintSuccess(fmt.Sprintf("✓ Cleanup completed (%d step(s))", cleanupExecuted))
-	} else {
+	if len(cleanupSteps) == 0 {
 		ui.PrintInfo("No cleanup steps to run")
+		return nil
+	}
+	
+	cleanupExecuted := 0
+	var cleanupErrors []string
+	
+	for _, step := range cleanupSteps {
+		// Check timeout before each step
+		select {
+		case <-cleanupCtx.Done():
+			ui.PrintError("Cleanup timeout after %v", cm.timeout)
+			cm.showManualDestroyInstructions(flow.WorkingDir, cleanupErrors)
+			return fmt.Errorf("cleanup timeout after %v", cm.timeout)
+		default:
+		}
+		
+		// Calculate remaining time
+		deadline, ok := cleanupCtx.Deadline()
+		remainingTime := "unknown"
+		if ok {
+			remainingTime = time.Until(deadline).Round(time.Second).String()
+		}
+		ui.PrintInfo(fmt.Sprintf("  Running cleanup step: %s (timeout: %s remaining)", step.Name, remainingTime))
+		
+		// Execute cleanup step with timeout context
+		err := cm.executor.ExecuteStepWithContext(cleanupCtx, *step, stepMap, executed)
+		if err != nil {
+			errorMsg := fmt.Sprintf("Cleanup step '%s' failed: %v", step.Name, err)
+			ui.PrintError(errorMsg)
+			cleanupErrors = append(cleanupErrors, errorMsg)
+			// Continue with other cleanup steps
+		} else {
+			cleanupExecuted++
+		}
+		executed[step.Name] = true
+	}
+	
+	if len(cleanupErrors) > 0 {
+		ui.PrintWarning(fmt.Sprintf("\n⚠️  Cleanup completed with %d error(s)", len(cleanupErrors)))
+		cm.showManualDestroyInstructions(flow.WorkingDir, cleanupErrors)
+		return fmt.Errorf("cleanup failed: %d step(s) failed", len(cleanupErrors))
+	}
+	
+	if cleanupExecuted > 0 {
+		ui.PrintSuccess(fmt.Sprintf("✓ Cleanup completed successfully (%d step(s))", cleanupExecuted))
 	}
 	
 	return nil
+}
+
+// showManualDestroyInstructions shows instructions for manual cleanup
+func (cm *CleanupManager) showManualDestroyInstructions(workingDir string, errors []string) {
+	fmt.Println()
+	ui.PrintWarning("═══════════════════════════════════════════════════════════")
+	ui.PrintWarning("⚠️  CLEANUP FAILED - Manual intervention required")
+	ui.PrintWarning("═══════════════════════════════════════════════════════════")
+	fmt.Println()
+	
+	if len(errors) > 0 {
+		ui.PrintFailure("Failed cleanup steps:")
+		for i, err := range errors {
+			fmt.Printf("  %d. %s\n", i+1, err)
+		}
+		fmt.Println()
+	}
+	
+	ui.PrintInfo("To manually destroy resources, run:")
+	fmt.Printf("  cd %s\n", workingDir)
+	fmt.Printf("  terraform destroy -auto-approve\n")
+	fmt.Println()
+	
+	ui.PrintInfo("Or if using LocalStack:")
+	fmt.Printf("  cd %s\n", workingDir)
+	fmt.Printf("  AWS_ENDPOINT_URL=http://localhost:4566 terraform destroy -auto-approve\n")
+	fmt.Println()
+	
+	ui.PrintWarning("═══════════════════════════════════════════════════════════")
 }
 
 func (cm *CleanupManager) monitorSignals() {
 	select {
 	case sig := <-cm.cleanupCh:
 		cm.interrupted = true
-		ui.PrintWarning(fmt.Sprintf("\n⚠️  Received signal: %v", sig))
+		sigName := "SIGINT"
+		if sig == syscall.SIGTERM {
+			sigName = "SIGTERM"
+		}
+		ui.PrintWarning(fmt.Sprintf("\n⚠️  Received signal: %s (%v)", sigName, sig))
 		ui.PrintWarning("Cancelling operations and running cleanup...")
 		cm.cancel()
 		
-		// Run cleanup
+		// Run cleanup with timeout
 		if err := cm.RunCleanup(); err != nil {
 			ui.PrintError("Cleanup failed: %v", err)
+			// Manual instructions already shown in RunCleanup
 		}
 		
 		os.Exit(130) // Standard exit code for SIGINT

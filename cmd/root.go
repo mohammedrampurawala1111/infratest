@@ -116,9 +116,10 @@ func executeFlow(flowPath string) error {
 			ui.PrintError("Failed to generate report: %v", err2)
 		}
 		
-		// Run cleanup
+		// Run cleanup (manual instructions shown if it fails)
 		if err := cleanupMgr.RunCleanup(); err != nil {
-			ui.PrintError("Cleanup failed: %v", err)
+			// Manual destroy instructions are already shown in RunCleanup
+			// Just return the error
 		}
 		
 		return err
